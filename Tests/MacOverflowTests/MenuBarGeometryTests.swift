@@ -101,4 +101,16 @@ final class MenuBarGeometryTests: XCTestCase {
     func testItemFarRightOfNotchIsVisible() {
         XCTAssertTrue(isVisible(CGRect(x: 1200, y: 2, width: 22, height: 22), notch: (1000, 1100)))
     }
+
+    // Regression: on a notched display the app-menu width must be ignored, so
+    // classification doesn't depend on which app is frontmost at scan time (that
+    // made the ≡ menu and the All Items window disagree). An item right of the
+    // notch stays visible even with a huge appMenuRightEdge.
+    func testNotchIgnoresAppMenuEdge() {
+        XCTAssertTrue(isVisible(
+            CGRect(x: 700, y: 2, width: 22, height: 22),
+            appMenuRightEdge: 2000,
+            notch: (521, 646)
+        ))
+    }
 }

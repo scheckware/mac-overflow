@@ -14,13 +14,11 @@ private struct AppSnapshot: @unchecked Sendable {
 private final class ScanCollector: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var items: [MenuBarItem] = []
-    private(set) var log = ""
 
-    func add(items newItems: [MenuBarItem], log newLog: String) {
+    func add(_ newItems: [MenuBarItem]) {
         lock.lock()
         defer { lock.unlock() }
         items.append(contentsOf: newItems)
-        if !newLog.isEmpty { log += newLog }
     }
 }
 
@@ -140,7 +138,6 @@ public final class MenuBarMonitor: ObservableObject {
         notch: (screenMinX: CGFloat, minX: CGFloat, maxX: CGFloat),
         frontmostPID: pid_t?
     ) -> [MenuBarItem] {
-        let debug = UserDefaults.standard.bool(forKey: "AXDebug")
         let layout = MenuBarLayout(
             screenFrames: screenFrames,
             menuBarThickness: menuBarThickness,
@@ -152,47 +149,25 @@ public final class MenuBarMonitor: ObservableObject {
         let collector = ScanCollector()
 
         DispatchQueue.concurrentPerform(iterations: apps.count) { index in
-            let (items, log) = scanApp(apps[index], layout: layout, debug: debug)
-            collector.add(items: items, log: log)
-        }
-
-        if debug {
-            let header = """
-            MacOverflow AX diagnostics
-            screens: \(screenFrames)
-            menuBarThickness: \(menuBarThickness)
-            appMenuRightEdge: \(layout.appMenuRightEdge)
-            notch: \(notch.minX)…\(notch.maxX) (screen minX \(notch.screenMinX))
-
-            """
-            try? (header + collector.log).write(to: URL(fileURLWithPath: "/tmp/macoverflow-ax.log"), atomically: true, encoding: .utf8)
+            collector.add(scanApp(apps[index], layout: layout))
         }
 
         return collector.items.sorted { $0.frame.minX < $1.frame.minX }
     }
 
-    /// Enumerates one app's menu bar extras (visible and hidden), plus a
-    /// diagnostic string when `debug` is set.
-    nonisolated private static func scanApp(
-        _ app: AppSnapshot,
-        layout: MenuBarLayout,
-        debug: Bool
-    ) -> (items: [MenuBarItem], log: String) {
+    /// Enumerates one app's menu bar extras (visible and hidden).
+    nonisolated private static func scanApp(_ app: AppSnapshot, layout: MenuBarLayout) -> [MenuBarItem] {
         let appElement = AXUIElementCreateApplication(app.pid)
         AXUIElementSetMessagingTimeout(appElement, axTimeout)
 
         // Most apps have no extras — this returns quickly (or times out fast).
         guard let extras: AXUIElement = AX.attribute(appElement, kAXExtrasMenuBarAttribute as String) else {
-            return ([], "")
+            return []
         }
 
         var items: [MenuBarItem] = []
-        var log = ""
         for child in AX.children(extras) {
             AXUIElementSetMessagingTimeout(child, axTimeout)
-            if debug {
-                log += describe(child, owner: app.name)
-            }
 
             // Skip empty placeholder slots. Control Center vends several
             // disabled, zero-size items that aren't real menu bar extras.
@@ -206,16 +181,6 @@ public final class MenuBarMonitor: ObservableObject {
             item.isVisibleInBar = MenuBarGeometry.isVisible(itemFrame: item.frame, layout: layout)
             items.append(item)
         }
-        return (items, log)
-    }
-
-    /// Dumps an element's actions and attribute values (diagnostics only).
-    nonisolated private static func describe(_ element: AXUIElement, owner: String) -> String {
-        var text = "── item (owner: \(owner)) ──\n"
-        text += "  actions: \(AX.actionNames(element))\n"
-        for name in AX.attributeNames(element) {
-            text += "  \(name) = \(AX.describeValue(element, name))\n"
-        }
-        return text + "\n"
+        return items
     }
 }

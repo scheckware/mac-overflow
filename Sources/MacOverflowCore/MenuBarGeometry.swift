@@ -65,14 +65,19 @@ public enum MenuBarGeometry {
 
         let centerX = itemFrame.midX
 
-        // Occluded by the frontmost app's menus on the left.
-        if centerX < layout.appMenuRightEdge { return false }
-
-        // On a notched display, the item must fully clear the notch on the right.
-        if layout.notchMaxX > layout.notchMinX,
-           centerX >= layout.notchScreenMinX,
-           itemFrame.minX <= layout.notchMaxX + notchGuard {
-            return false
+        if layout.notchMaxX > layout.notchMinX {
+            // Notched display: the notch is the authoritative left boundary. The
+            // frontmost app's menu width is irrelevant here (app menus live left
+            // of the notch) — and consulting it would make results depend on
+            // which app is frontmost at scan time, so the menu and the "All
+            // Items" window could disagree. Item must clear the notch on the right.
+            if centerX >= layout.notchScreenMinX,
+               itemFrame.minX <= layout.notchMaxX + notchGuard {
+                return false
+            }
+        } else {
+            // No notch: items can be painted over by the frontmost app's menus.
+            if centerX < layout.appMenuRightEdge { return false }
         }
 
         return layout.screenFrames.contains { frame in

@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let monitor = MenuBarMonitor()
     private var menuIsOpen = false
     private var allItemsWindow: NSWindow?
+    /// True from when the menu opens until that open's fresh scan lands. While
+    /// set, the menu shows "Scanning…" rather than a stale cached list.
+    private var awaitingScan = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar only — no Dock icon.
@@ -35,30 +38,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overflowMenu.delegate = self
         statusItem.menu = overflowMenu
 
-        // When a background scan finishes, refresh the menu if it's still open
-        // so late-arriving results appear without the user reopening it.
+        // When a scan finishes while the menu is open, replace the "Scanning…"
+        // placeholder with this open's fresh results (a grow, never a shrink).
+        // Each open triggers exactly one scan, so this fires at most once per
+        // open — the list can't change under the cursor afterward.
         monitor.onUpdate = { [weak self] in
-            guard let self, self.menuIsOpen else { return }
+            guard let self, self.menuIsOpen, self.awaitingScan else { return }
+            self.awaitingScan = false
             self.populate(self.overflowMenu)
         }
 
         promptForAccessibilityIfNeeded()
-        monitor.refresh() // Warm the cache if we're already trusted.
+        // No launch warm-up scan: the menu bar is still settling right after
+        // login, so an early scan captures wrong positions. Each menu open (and
+        // the All Items window) drives its own fresh scan instead.
     }
 
     // MARK: - NSMenuDelegate
 
     func menuWillOpen(_ menu: NSMenu) {
         menuIsOpen = true
-        monitor.refresh() // Non-blocking; updates the open menu via onUpdate.
+        awaitingScan = true // Show fresh results for this open, not a stale cache.
+        monitor.refresh()
     }
 
     func menuDidClose(_ menu: NSMenu) {
         menuIsOpen = false
+        awaitingScan = false
     }
 
-    /// Builds the menu from the monitor's cached results. This never performs
-    /// Accessibility IPC, so it can't block the menu-tracking run loop.
+    /// Builds the menu. Shows "Scanning…" until this open's fresh scan lands,
+    /// then the current hidden items. Never performs Accessibility IPC itself, so
+    /// it can't block the menu-tracking run loop.
     func menuNeedsUpdate(_ menu: NSMenu) {
         populate(menu)
     }
@@ -72,10 +83,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        // Waiting for this open's fresh scan — don't show a stale cached list.
+        if awaitingScan {
+            let placeholder = NSMenuItem(title: "Scanning…", action: nil, keyEquivalent: "")
+            placeholder.isEnabled = false
+            menu.addItem(placeholder)
+            addFooter(to: menu)
+            return
+        }
+
         let hidden = monitor.hiddenItems.filter { NSRunningApplication(processIdentifier: $0.ownerPID) != nil }
         if hidden.isEmpty {
-            let title = monitor.isScanning ? "Scanning…" : "No hidden items"
-            let placeholder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let placeholder = NSMenuItem(title: "No hidden items", action: nil, keyEquivalent: "")
             placeholder.isEnabled = false
             menu.addItem(placeholder)
         } else {

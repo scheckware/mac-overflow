@@ -54,30 +54,6 @@ enum AX {
         attribute(element, kAXChildrenAttribute as String) ?? []
     }
 
-    /// Names of all attributes the element exposes (for diagnostics).
-    static func attributeNames(_ element: AXUIElement) -> [String] {
-        var names: CFArray?
-        guard AXUIElementCopyAttributeNames(element, &names) == .success else { return [] }
-        return (names as? [String]) ?? []
-    }
-
-    /// Names of all actions the element supports (e.g. `AXPress`).
-    static func actionNames(_ element: AXUIElement) -> [String] {
-        var names: CFArray?
-        guard AXUIElementCopyActionNames(element, &names) == .success else { return [] }
-        return (names as? [String]) ?? []
-    }
-
-    /// A best-effort string description of an attribute's value (for diagnostics).
-    static func describeValue(_ element: AXUIElement, _ name: String) -> String {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
-              let value else {
-            return "<none>"
-        }
-        return String(describing: value)
-    }
-
     /// Performs an AX action (e.g. press), reporting whether it succeeded.
     @discardableResult
     static func perform(_ element: AXUIElement, _ action: String) -> Bool {
