@@ -14,14 +14,20 @@ let package = Package(
     ],
     dependencies: [],
     targets: [
+        // Thin executable: app lifecycle + UI only.
         .executableTarget(
             name: "MacOverflow",
-            dependencies: [],
-            path: "Sources"
+            dependencies: ["MacOverflowCore"],
+            path: "Sources/MacOverflow"
+        ),
+        // Testable library: models, monitoring, and pure geometry.
+        .target(
+            name: "MacOverflowCore",
+            path: "Sources/MacOverflowCore"
         ),
         .testTarget(
             name: "MacOverflowTests",
-            dependencies: ["MacOverflow"],
+            dependencies: ["MacOverflowCore"],
             path: "Tests"
         )
     ]

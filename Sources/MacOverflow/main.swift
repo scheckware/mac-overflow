@@ -1,5 +1,7 @@
-import SwiftUI
 import AppKit
+import ApplicationServices
+import MacOverflowCore
+import SwiftUI
 
 @main
 struct MacOverflowApp: App {
@@ -12,83 +14,146 @@ struct MacOverflowApp: App {
     }
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate {
-    var statusItem: NSStatusItem!
-    var menu: NSMenu!
-    var menuBarMonitor: MenuBarMonitor!
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private var statusItem: NSStatusItem!
+    private let overflowMenu = NSMenu()
+    private let monitor = MenuBarMonitor()
+    private var menuIsOpen = false
+    private var allItemsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Hide dock icon - we're a menu bar only app
+        // Menu bar only — no Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
-        // Create menu bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.image = NSImage(
+            systemSymbolName: "line.3.horizontal",
+            accessibilityDescription: "Overflow Menu"
+        )
 
-        if let button = statusItem.button {
-            // Use a three-line "hamburger" icon
-            button.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "Overflow Menu")
-            button.action = #selector(showOverflowMenu)
-            button.target = self
+        overflowMenu.delegate = self
+        statusItem.menu = overflowMenu
+
+        // When a background scan finishes, refresh the menu if it's still open
+        // so late-arriving results appear without the user reopening it.
+        monitor.onUpdate = { [weak self] in
+            guard let self, self.menuIsOpen else { return }
+            self.populate(self.overflowMenu)
         }
 
-        // Initialize menu bar monitor
-        menuBarMonitor = MenuBarMonitor()
-
-        // Check for accessibility permissions
-        checkAccessibilityPermissions()
+        promptForAccessibilityIfNeeded()
+        monitor.refresh() // Warm the cache if we're already trusted.
     }
 
-    @objc func showOverflowMenu() {
-        guard let button = statusItem.button else { return }
+    // MARK: - NSMenuDelegate
 
-        // Build menu from hidden items
-        menu = NSMenu()
+    func menuWillOpen(_ menu: NSMenu) {
+        menuIsOpen = true
+        monitor.refresh() // Non-blocking; updates the open menu via onUpdate.
+    }
 
-        let hiddenItems = menuBarMonitor.getHiddenMenuBarItems()
+    func menuDidClose(_ menu: NSMenu) {
+        menuIsOpen = false
+    }
 
-        if hiddenItems.isEmpty {
-            let noItemsItem = NSMenuItem(title: "No hidden items", action: nil, keyEquivalent: "")
-            noItemsItem.isEnabled = false
-            menu.addItem(noItemsItem)
+    /// Builds the menu from the monitor's cached results. This never performs
+    /// Accessibility IPC, so it can't block the menu-tracking run loop.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        populate(menu)
+    }
+
+    private func populate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        guard AXIsProcessTrusted() else {
+            addItem(to: menu, title: "Grant Accessibility permission…", action: #selector(openAccessibilitySettings))
+            addFooter(to: menu)
+            return
+        }
+
+        let hidden = monitor.hiddenItems.filter { NSRunningApplication(processIdentifier: $0.ownerPID) != nil }
+        if hidden.isEmpty {
+            let title = monitor.isScanning ? "Scanning…" : "No hidden items"
+            let placeholder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            placeholder.isEnabled = false
+            menu.addItem(placeholder)
         } else {
-            for item in hiddenItems {
-                let menuItem = NSMenuItem(
-                    title: item.title,
-                    action: #selector(handleOverflowItemClick(_:)),
-                    keyEquivalent: ""
-                )
+            for item in hidden {
+                let menuItem = addItem(to: menu, title: item.title, action: #selector(handleOverflowItemClick(_:)))
                 menuItem.representedObject = item
-                menuItem.image = item.icon
-                menu.addItem(menuItem)
+                menuItem.image = item.icon.map(Self.menuSized)
             }
         }
 
-        menu.addItem(NSMenuItem.separator())
-
-        // Add settings
-        menu.addItem(NSMenuItem(title: "About Mac Overflow", action: #selector(showAbout), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
-
-        // Show menu
-        statusItem.menu = menu
-        statusItem.button?.performClick(nil)
-        statusItem.menu = nil  // Clear menu so it rebuilds fresh next time
+        addFooter(to: menu)
     }
 
-    @objc func handleOverflowItemClick(_ sender: NSMenuItem) {
+    // MARK: - Menu construction helpers
+
+    @discardableResult
+    private func addItem(to menu: NSMenu, title: String, action: Selector, key: String = "") -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        item.target = self
+        menu.addItem(item)
+        return item
+    }
+
+    private func addFooter(to menu: NSMenu) {
+        menu.addItem(.separator())
+        addItem(to: menu, title: "All Menu Bar Items…", action: #selector(showAllItems))
+        addItem(to: menu, title: "Rescan", action: #selector(rescan), key: "r")
+        addItem(to: menu, title: "About Mac Overflow", action: #selector(showAbout))
+        addItem(to: menu, title: "Quit", action: #selector(quit), key: "q")
+    }
+
+    /// Returns a menu-bar-sized copy of an icon (leaves the original untouched).
+    private static func menuSized(_ image: NSImage) -> NSImage {
+        let copy = image.copy() as! NSImage
+        copy.size = NSSize(width: 18, height: 18)
+        return copy
+    }
+
+    // MARK: - Actions
+
+    @objc private func handleOverflowItemClick(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? MenuBarItem else { return }
-        // Forward click to the actual menu bar item
         item.performClick()
+        // The target app may have opened a panel or quit — refresh shortly after
+        // so the list reflects the new state next time the menu opens.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            self?.monitor.refresh()
+        }
     }
 
-    @objc func showAbout() {
+    @objc private func rescan() {
+        monitor.refresh()
+    }
+
+    @objc private func showAllItems() {
+        monitor.refresh()
+        if allItemsWindow == nil {
+            let controller = NSHostingController(rootView: AllItemsView(monitor: monitor))
+            let window = NSWindow(contentViewController: controller)
+            window.title = "All Menu Bar Items"
+            window.styleMask = [.titled, .closable, .resizable]
+            window.setContentSize(NSSize(width: 360, height: 460))
+            window.isReleasedWhenClosed = false
+            allItemsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        allItemsWindow?.center()
+        allItemsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Mac Overflow"
         alert.informativeText = """
         Lightweight menu bar overflow manager
 
-        Version: 0.1.0
-        License: MIT
+        Version 0.1.0 · MIT License
 
         Never lose your menu bar icons again!
         """
@@ -97,54 +162,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
-    @objc func quit() {
+    @objc private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    @objc private func quit() {
         NSApplication.shared.terminate(nil)
     }
 
-    func checkAccessibilityPermissions() {
-        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        let accessEnabled = AXIsProcessTrustedWithOptions(options)
+    // MARK: - Permissions
 
-        if !accessEnabled {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                let alert = NSAlert()
-                alert.messageText = "Accessibility Permission Required"
-                alert.informativeText = """
-                Mac Overflow needs Accessibility permissions to detect and interact with menu bar icons.
-
-                Please grant permission in System Preferences > Privacy & Security > Accessibility
-                """
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "Open System Preferences")
-                alert.addButton(withTitle: "Quit")
-
-                if alert.runModal() == .alertFirstButtonReturn {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                }
-                NSApplication.shared.terminate(nil)
-            }
-        }
+    /// Prompts for Accessibility on first launch. The app keeps running if it's
+    /// denied — the menu re-checks each time it opens and shows a "grant
+    /// permission" entry until access is available.
+    private func promptForAccessibilityIfNeeded() {
+        // "AXTrustedCheckOptionPrompt" is the documented value of
+        // `kAXTrustedCheckOptionPrompt`; using the literal avoids referencing a
+        // non-concurrency-safe imported global under Swift 6.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 }
 
 struct SettingsView: View {
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
+            Image(systemName: "line.3.horizontal")
+                .font(.largeTitle)
             Text("Mac Overflow")
-                .font(.title)
-
-            Text("Lightweight menu bar overflow manager")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-
-            Divider()
-
-            Text("Click the ≡ icon in your menu bar to see hidden items")
+                .font(.title2)
+                .bold()
+            Text("Click the ≡ icon in your menu bar to see hidden items.")
                 .multilineTextAlignment(.center)
-
-            Spacer()
+                .foregroundStyle(.secondary)
         }
-        .padding()
-        .frame(width: 400, height: 200)
+        .padding(24)
+        .frame(width: 380, height: 180)
     }
 }

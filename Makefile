@@ -1,10 +1,24 @@
-.PHONY: build run clean release app dmg install uninstall test
+.PHONY: build run run-app clean release app dmg install uninstall test
+
+# Code-signing identity used by `make app`. A STABLE identity (Apple
+# Development / Developer ID) makes the Accessibility permission persist across
+# rebuilds; ad-hoc signing gives a new identity every build, so macOS re-prompts
+# every launch. Auto-detects an "Apple Development" identity; override with:
+#   make app CODESIGN_IDENTITY="Developer ID Application: You (TEAMID)"
+CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | sed -E 's/^[^"]*"([^"]+)".*/\1/')
 
 build:
 	swift build
 
 run: build
 	.build/debug/MacOverflow
+
+# Build a proper .app bundle and launch it. Use this (not `run`) to test the
+# menu bar UI — a bare SPM binary has no bundle identifier, so the status item
+# won't respond to clicks and the log fills with intents-registration errors.
+run-app: app
+	@echo "Launching Mac Overflow..."
+	@open build/MacOverflow.app
 
 clean:
 	swift package clean
@@ -17,8 +31,16 @@ app: release
 	@echo "Creating app bundle..."
 	@mkdir -p build/MacOverflow.app/Contents/MacOS
 	@mkdir -p build/MacOverflow.app/Contents/Resources
-	@cp .build/release/MacOverflow build/MacOverflow.app/Contents/MacOS/
-	@./scripts/generate-info-plist.sh > build/MacOverflow.app/Contents/Info.plist
+	@cp "$$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/MacOverflow" build/MacOverflow.app/Contents/MacOS/
+	@bash scripts/generate-info-plist.sh > build/MacOverflow.app/Contents/Info.plist
+	@if [ -n "$(CODESIGN_IDENTITY)" ]; then \
+		echo "Signing with: $(CODESIGN_IDENTITY)"; \
+		codesign --force --sign "$(CODESIGN_IDENTITY)" build/MacOverflow.app; \
+	else \
+		echo "WARNING: no Developer identity found; ad-hoc signing."; \
+		echo "         Accessibility permission will NOT persist across rebuilds."; \
+		codesign --force --sign - build/MacOverflow.app; \
+	fi
 	@echo "App bundle created at build/MacOverflow.app"
 
 dmg: app
