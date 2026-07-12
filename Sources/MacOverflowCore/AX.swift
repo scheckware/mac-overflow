@@ -54,6 +54,17 @@ enum AX {
         attribute(element, kAXChildrenAttribute as String) ?? []
     }
 
+    /// The action names the element supports (e.g. `AXPress`, `AXShowMenu`), or
+    /// an empty array on any AX error / no actions.
+    static func actionNames(_ element: AXUIElement) -> [String] {
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(element, &names) == .success,
+              let names = names as? [String] else {
+            return []
+        }
+        return names
+    }
+
     /// Performs an AX action (e.g. press), reporting whether it succeeded.
     @discardableResult
     static func perform(_ element: AXUIElement, _ action: String) -> Bool {

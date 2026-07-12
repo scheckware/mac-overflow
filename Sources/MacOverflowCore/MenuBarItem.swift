@@ -20,6 +20,11 @@ public struct MenuBarItem: Identifiable, @unchecked Sendable {
     public let icon: NSImage?
     /// The item's frame in screen coordinates, as reported by Accessibility.
     public let frame: CGRect
+    /// Whether the item advertises a press/show-menu action (on itself or a
+    /// child). `false` reliably means clicking it is a no-op; `true` means "worth
+    /// trying" but is NOT a guarantee — an off-screen item can advertise a press
+    /// action yet ignore it.
+    public let isActionable: Bool
     /// Whether the item is currently drawn in the menu bar. Set by the scan.
     public internal(set) var isVisibleInBar: Bool = false
 
@@ -69,8 +74,22 @@ extension MenuBarItem {
             ownerPID: ownerPID,
             icon: axImage ?? ownerIcon,
             frame: CGRect(origin: position, size: size),
+            isActionable: resolveActionable(element),
             element: element
         )
+    }
+
+    /// Whether the element (or a child) advertises a click action. Mirrors the
+    /// actions `performClick()` attempts, so it predicts whether a click can do
+    /// anything at all.
+    private static func resolveActionable(_ element: AXUIElement) -> Bool {
+        let clickActions: Set<String> = [kAXPressAction as String, kAXShowMenuAction as String]
+        if AX.actionNames(element).contains(where: clickActions.contains) {
+            return true
+        }
+        return AX.children(element).contains { child in
+            AX.actionNames(child).contains(where: clickActions.contains)
+        }
     }
 
     /// Finds the most descriptive label for an item. On macOS 26, Control

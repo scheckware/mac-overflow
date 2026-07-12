@@ -36,10 +36,13 @@ struct AllItemsView: View {
 
     private func row(_ item: MenuBarItem) -> some View {
         Button {
-            item.performClick()
-            // The item may open a panel or quit its app — refresh shortly after.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
-                monitor.refresh()
+            if item.performClick() {
+                // The item may open a panel or quit its app — refresh shortly after.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+                    monitor.refresh()
+                }
+            } else {
+                NSSound.beep()
             }
         } label: {
             HStack(spacing: 10) {
@@ -60,10 +63,17 @@ struct AllItemsView: View {
                     }
                 }
                 Spacer()
+                if !item.isActionable {
+                    Text("(Not Clickable)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .contentShape(Rectangle())
+            .opacity(item.isActionable ? 1 : 0.5)
         }
         .buttonStyle(.plain)
-        .help("Click to activate \(item.title)")
+        .disabled(!item.isActionable)
+        .help(item.isActionable ? "Click to activate \(item.title)" : "\(item.title) ignores clicks")
     }
 }

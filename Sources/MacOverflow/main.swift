@@ -24,6 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// True from when the menu opens until that open's fresh scan lands. While
     /// set, the menu shows "Scanning…" rather than a stale cached list.
     private var awaitingScan = false
+    /// Set at launch; when the next scan lands, check whether our own ≡ icon is
+    /// itself hidden and, if so, open the All Items window.
+    private var pendingSelfHiddenCheck = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar only — no Dock icon.
@@ -38,20 +41,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         overflowMenu.delegate = self
         statusItem.menu = overflowMenu
 
-        // When a scan finishes while the menu is open, replace the "Scanning…"
-        // placeholder with this open's fresh results (a grow, never a shrink).
-        // Each open triggers exactly one scan, so this fires at most once per
-        // open — the list can't change under the cursor afterward.
+        // When a scan finishes: first run the one-time self-hidden check (may run
+        // while no menu is open); then, if the menu is open awaiting results,
+        // replace the "Scanning…" placeholder with this open's fresh results (a
+        // grow, never a shrink).
         monitor.onUpdate = { [weak self] in
-            guard let self, self.menuIsOpen, self.awaitingScan else { return }
+            guard let self else { return }
+            if self.pendingSelfHiddenCheck {
+                self.pendingSelfHiddenCheck = false
+                self.openAllItemsIfSelfHidden()
+            }
+            guard self.menuIsOpen, self.awaitingScan else { return }
             self.awaitingScan = false
             self.populate(self.overflowMenu)
         }
 
         promptForAccessibilityIfNeeded()
-        // No launch warm-up scan: the menu bar is still settling right after
-        // login, so an early scan captures wrong positions. Each menu open (and
-        // the All Items window) drives its own fresh scan instead.
+
+        // No launch warm-up scan for the menu (the menu bar is still settling right
+        // after login, so an early scan captures wrong positions). But do one
+        // delayed scan to detect whether our own ≡ icon is overflowed/hidden.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self else { return }
+            self.pendingSelfHiddenCheck = true
+            self.monitor.refresh()
+        }
+    }
+
+    /// If our own status item is hidden/overflowed, surface the app by opening the
+    /// All Items window (it lists Mac Overflow under Hidden). An off-screen status
+    /// item can't be clicked, so this is the only reliable way to reach the app.
+    private func openAllItemsIfSelfHidden() {
+        let mine = monitor.allItems.first { $0.ownerPID == getpid() }
+        if let mine, !mine.isVisibleInBar {
+            showAllItems()
+        }
     }
 
     // MARK: - NSMenuDelegate
@@ -99,9 +123,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(placeholder)
         } else {
             for item in hidden {
-                let menuItem = addItem(to: menu, title: item.title, action: #selector(handleOverflowItemClick(_:)))
-                menuItem.representedObject = item
-                menuItem.image = item.icon.map(Self.menuSized)
+                if item.isActionable {
+                    let menuItem = addItem(to: menu, title: item.title, action: #selector(handleOverflowItemClick(_:)))
+                    menuItem.representedObject = item
+                    menuItem.image = item.icon.map(Self.menuSized)
+                } else {
+                    // No click action — show it, greyed, so the user knows it exists
+                    // but can't be activated.
+                    let menuItem = NSMenuItem(title: "\(item.title) (Not Clickable)", action: nil, keyEquivalent: "")
+                    menuItem.isEnabled = false
+                    menuItem.image = item.icon.map(Self.menuSized)
+                    menu.addItem(menuItem)
+                }
             }
         }
 
@@ -137,11 +170,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func handleOverflowItemClick(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? MenuBarItem else { return }
-        item.performClick()
-        // The target app may have opened a panel or quit — refresh shortly after
-        // so the list reflects the new state next time the menu opens.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
-            self?.monitor.refresh()
+        if item.performClick() {
+            // The target app may have opened a panel or quit — refresh shortly
+            // after so the list reflects the new state next time the menu opens.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+                self?.monitor.refresh()
+            }
+        } else {
+            // Advertised a click action but ignored it (e.g. off-screen item).
+            NSSound.beep()
         }
     }
 
