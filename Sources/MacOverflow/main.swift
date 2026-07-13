@@ -123,18 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(placeholder)
         } else {
             for item in hidden {
-                if item.isActionable {
-                    let menuItem = addItem(to: menu, title: item.title, action: #selector(handleOverflowItemClick(_:)))
-                    menuItem.representedObject = item
-                    menuItem.image = item.icon.map(Self.menuSized)
-                } else {
-                    // No click action — show it, greyed, so the user knows it exists
-                    // but can't be activated.
-                    let menuItem = NSMenuItem(title: "\(item.title) (Not Clickable)", action: nil, keyEquivalent: "")
-                    menuItem.isEnabled = false
-                    menuItem.image = item.icon.map(Self.menuSized)
-                    menu.addItem(menuItem)
-                }
+                let menuItem = addItem(to: menu, title: item.title, action: #selector(handleOverflowItemClick(_:)))
+                menuItem.representedObject = item
+                menuItem.image = item.icon.map(Self.menuSized)
             }
         }
 
@@ -144,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Menu construction helpers
 
     @discardableResult
-    private func addItem(to menu: NSMenu, title: String, action: Selector, key: String = "") -> NSMenuItem {
+    private func addItem(to menu: NSMenu, title: String, action: Selector?, key: String = "") -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
         item.target = self
         menu.addItem(item)
@@ -170,15 +161,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func handleOverflowItemClick(_ sender: NSMenuItem) {
         guard let item = sender.representedObject as? MenuBarItem else { return }
-        if item.performClick() {
-            // The target app may have opened a panel or quit — refresh shortly
-            // after so the list reflects the new state next time the menu opens.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
-                self?.monitor.refresh()
-            }
-        } else {
-            // Advertised a click action but ignored it (e.g. off-screen item).
-            NSSound.beep()
+        item.performClick() // no-op for our own item (self-AX would deadlock)
+        // The target app may have opened a panel or quit — refresh shortly after
+        // so the list reflects the new state next time the menu opens.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            self?.monitor.refresh()
         }
     }
 
@@ -189,7 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showAllItems() {
         monitor.refresh()
         if allItemsWindow == nil {
-            let controller = NSHostingController(rootView: AllItemsView(monitor: monitor))
+            let controller = NSHostingController(
+                rootView: AllItemsView(monitor: monitor, onActivateSelf: { [weak self] in
+                    self?.showOverflowMenu()
+                })
+            )
             let window = NSWindow(contentViewController: controller)
             window.title = "All Menu Bar Items"
             window.styleMask = [.titled, .closable, .resizable]
@@ -200,6 +191,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         allItemsWindow?.center()
         allItemsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Shows our own overflow menu via AppKit (no Accessibility on ourselves).
+    /// Used when the user activates the Mac Overflow row in the All Items window,
+    /// including when our ≡ icon itself is hidden.
+    private func showOverflowMenu() {
+        guard let button = statusItem.button else { return }
+        if button.window != nil {
+            // Our icon is on-screen: click it to open the menu in place.
+            button.performClick(nil)
+        } else {
+            // Off-screen/hidden: pop the menu at the mouse location instead.
+            overflowMenu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
     }
 
     @objc private func showAbout() {

@@ -6,6 +6,10 @@ import SwiftUI
 /// Apple's own Control Center modules.
 struct AllItemsView: View {
     @ObservedObject var monitor: MenuBarMonitor
+    /// Called when the user clicks our own (Mac Overflow) row — shows the
+    /// overflow menu via AppKit rather than AX-pressing ourselves (which
+    /// deadlocks).
+    var onActivateSelf: () -> Void
 
     var body: some View {
         let hidden = monitor.allItems.filter { !$0.isVisibleInBar }
@@ -35,14 +39,16 @@ struct AllItemsView: View {
     }
 
     private func row(_ item: MenuBarItem) -> some View {
-        Button {
-            if item.performClick() {
+        let isSelf = item.ownerPID == getpid()
+        return Button {
+            if isSelf {
+                onActivateSelf()
+            } else {
+                item.performClick()
                 // The item may open a panel or quit its app — refresh shortly after.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
                     monitor.refresh()
                 }
-            } else {
-                NSSound.beep()
             }
         } label: {
             HStack(spacing: 10) {
@@ -55,7 +61,11 @@ struct AllItemsView: View {
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.title).lineLimit(1)
-                    if item.title != item.ownerName {
+                    if isSelf, !item.isVisibleInBar {
+                        Text("Increase display resolution and ⌘-drag the ≡ icon right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if item.title != item.ownerName {
                         Text(item.ownerName)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -63,17 +73,10 @@ struct AllItemsView: View {
                     }
                 }
                 Spacer()
-                if !item.isActionable {
-                    Text("(Not Clickable)")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
             }
             .contentShape(Rectangle())
-            .opacity(item.isActionable ? 1 : 0.5)
         }
         .buttonStyle(.plain)
-        .disabled(!item.isActionable)
-        .help(item.isActionable ? "Click to activate \(item.title)" : "\(item.title) ignores clicks")
+        .help(isSelf ? "Show the Mac Overflow menu" : "Click to activate \(item.title)")
     }
 }
