@@ -19,3 +19,11 @@ Package.resolved
 build/
 *.dmg
 *.zip
+
+# Signing / notarization secrets — never commit these
+*.p8
+*.p12
+*.cer
+*.pem
+*.mobileprovision
+AuthKey_*
