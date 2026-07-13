@@ -87,6 +87,7 @@ jobs:
           cp .build/universal/MacOverflow build/MacOverflow.app/Contents/MacOS/
           chmod +x build/MacOverflow.app/Contents/MacOS/MacOverflow
           ./scripts/generate-info-plist.sh > build/MacOverflow.app/Contents/Info.plist
+          cp LICENSE build/MacOverflow.app/Contents/Resources/LICENSE.txt
 
       - name: Create ZIP
         id: zip

@@ -54,4 +54,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT
+Licensed under the [MIT License](LICENSE).
+
+This is a fork of [omniaura/mac-overflow](https://github.com/omniaura/mac-overflow)
+(MIT). The original copyright © 2026 Omni Aura is preserved; see the
+[LICENSE](LICENSE) file for the full text.

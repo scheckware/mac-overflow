@@ -4,7 +4,7 @@
 #   BUILD_NUMBER      -> CFBundleVersion             (bumped every build; see the
 #                                                     bump-build skill)
 MARKETING_VERSION="${MARKETING_VERSION:-1.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-5}"
+BUILD_NUMBER="${BUILD_NUMBER:-6}"
 
 cat << EOF
 <?xml version="1.0" encoding="UTF-8"?>

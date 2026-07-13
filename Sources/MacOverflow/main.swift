@@ -217,12 +217,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         Version \(short) (build \(build))
         Scheckware fork · MIT License
+        Based on Mac Overflow © 2026 Omni Aura
 
         Never lose your menu bar icons again!
         """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
-        alert.runModal()
+        alert.addButton(withTitle: "View License…")
+        if alert.runModal() == .alertSecondButtonReturn {
+            showLicense()
+        }
+    }
+
+    /// Opens the full MIT license. Prefers the copy bundled in the app; falls
+    /// back to the upstream repository if it isn't present.
+    private func showLicense() {
+        if let url = Bundle.main.url(forResource: "LICENSE", withExtension: "txt") {
+            NSWorkspace.shared.open(url)
+        } else if let url = URL(string: "https://github.com/omniaura/mac-overflow") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc private func openAccessibilitySettings() {

@@ -33,6 +33,7 @@ app: release
 	@mkdir -p build/MacOverflow.app/Contents/Resources
 	@cp "$$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/MacOverflow" build/MacOverflow.app/Contents/MacOS/
 	@bash scripts/generate-info-plist.sh > build/MacOverflow.app/Contents/Info.plist
+	@cp LICENSE build/MacOverflow.app/Contents/Resources/LICENSE.txt
 	@if [ -n "$(CODESIGN_IDENTITY)" ]; then \
 		echo "Signing with: $(CODESIGN_IDENTITY)"; \
 		codesign --force --sign "$(CODESIGN_IDENTITY)" build/MacOverflow.app; \
