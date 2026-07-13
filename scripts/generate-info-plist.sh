@@ -1,5 +1,10 @@
 #!/bin/bash
-VERSION=${VERSION:-"0.1.0"}
+# Source of truth for the app version (this is an SPM project — no Xcode project).
+#   MARKETING_VERSION -> CFBundleShortVersionString  (bumped for real releases)
+#   BUILD_NUMBER      -> CFBundleVersion             (bumped every build; see the
+#                                                     bump-build skill)
+MARKETING_VERSION="${MARKETING_VERSION:-1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-5}"
 
 cat << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -17,9 +22,9 @@ cat << EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>${VERSION}</string>
+    <string>${MARKETING_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>${VERSION}</string>
+    <string>${BUILD_NUMBER}</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -27,7 +32,7 @@ cat << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Omni Aura. MIT License.</string>
+    <string>Scheckware fork · MIT License. Based on Mac Overflow © 2026 Omni Aura.</string>
 </dict>
 </plist>
 EOF

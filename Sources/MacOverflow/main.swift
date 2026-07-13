@@ -3,16 +3,14 @@ import ApplicationServices
 import MacOverflowCore
 import SwiftUI
 
-@main
-struct MacOverflowApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    var body: some Scene {
-        Settings {
-            SettingsView()
-        }
-    }
-}
+// Pure AppKit entry point. This is a menu bar agent with nothing to configure,
+// so there's no SwiftUI `Settings` scene (which would add an empty "Mac Overflow
+// Settings" window). SwiftUI is still used for the All Items window via
+// NSHostingController.
+let application = NSApplication.shared
+let appDelegate = AppDelegate()
+application.delegate = appDelegate
+application.run()
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -209,12 +207,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
         let alert = NSAlert()
         alert.messageText = "Mac Overflow"
         alert.informativeText = """
         Lightweight menu bar overflow manager
 
-        Version 0.1.0 · MIT License
+        Version \(short) (build \(build))
+        Scheckware fork · MIT License
 
         Never lose your menu bar icons again!
         """
@@ -245,22 +247,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // non-concurrency-safe imported global under Swift 6.
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
-    }
-}
-
-struct SettingsView: View {
-    var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "line.3.horizontal")
-                .font(.largeTitle)
-            Text("Mac Overflow")
-                .font(.title2)
-                .bold()
-            Text("Click the ≡ icon in your menu bar to see hidden items.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-        }
-        .padding(24)
-        .frame(width: 380, height: 180)
     }
 }
