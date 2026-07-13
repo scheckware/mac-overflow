@@ -110,9 +110,11 @@ before any use. No trap risk observed.
 - `Casks/mac-overflow.rb` uses `sha256 :no_check` — the Homebrew cask doesn't pin the
   download hash. Fine while pre-release; pin it once artifacts are stable. Building
   from source avoids it.
-- Signing is **Apple Development** (a development cert), and CI does **not** notarize.
-  Fine for personal use; distributing to others cleanly (no Gatekeeper warning) needs
-  **Developer ID + notarization**.
+- Signing uses **Developer ID Application: Ben Scheck (P8ME3DR3G6)** with hardened
+  runtime + secure timestamp, so builds are **notarization-ready**. They are **not
+  yet notarized**, so `spctl` reports `rejected / Unnotarized Developer ID` — the app
+  runs locally but would warn on other Macs until notarized + stapled (see
+  improvement #1).
 
 ## Efficiency analysis
 
@@ -194,8 +196,10 @@ not a ceiling.
 ## Suggested improvements (prioritized)
 
 **Distribution (do these before sharing with others)**
-1. **Developer ID signing + notarization** so it opens without Gatekeeper warnings on
-   other Macs (CI currently builds/publishes but doesn't notarize).
+1. **Notarize + staple.** Builds are already signed with Developer ID + hardened
+   runtime (notarization-ready); add `xcrun notarytool submit` + `xcrun stapler
+   staple` so they open with no Gatekeeper warning on other Macs (CI currently
+   builds/publishes but doesn't notarize).
 2. **Pin the Homebrew cask hash** (drop `sha256 :no_check`) once release artifacts
    are stable.
 

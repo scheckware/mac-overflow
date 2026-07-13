@@ -1,11 +1,15 @@
 .PHONY: build run run-app clean release app dmg install uninstall test
 
-# Code-signing identity used by `make app`. A STABLE identity (Apple
-# Development / Developer ID) makes the Accessibility permission persist across
-# rebuilds; ad-hoc signing gives a new identity every build, so macOS re-prompts
-# every launch. Auto-detects an "Apple Development" identity; override with:
-#   make app CODESIGN_IDENTITY="Developer ID Application: You (TEAMID)"
-CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | sed -E 's/^[^"]*"([^"]+)".*/\1/')
+# Code-signing identity used by `make app`. Prefers a "Developer ID Application"
+# identity (required for notarization / sharing with others), then falls back to
+# "Apple Development" (fine for local use), then ad-hoc. A STABLE identity makes
+# the Accessibility permission persist across rebuilds; ad-hoc signing gives a
+# new identity every build, so macOS re-prompts every launch. Override with:
+#   make app CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Developer ID Application" | sed -E 's/^[^"]*"([^"]+)".*/\1/'; )
+ifeq ($(strip $(CODESIGN_IDENTITY)),)
+CODESIGN_IDENTITY := $(shell security find-identity -v -p codesigning 2>/dev/null | grep -m1 "Apple Development" | sed -E 's/^[^"]*"([^"]+)".*/\1/')
+endif
 
 build:
 	swift build
@@ -36,7 +40,7 @@ app: release
 	@cp LICENSE build/MacOverflow.app/Contents/Resources/LICENSE.txt
 	@if [ -n "$(CODESIGN_IDENTITY)" ]; then \
 		echo "Signing with: $(CODESIGN_IDENTITY)"; \
-		codesign --force --sign "$(CODESIGN_IDENTITY)" build/MacOverflow.app; \
+		codesign --force --options runtime --timestamp --sign "$(CODESIGN_IDENTITY)" build/MacOverflow.app; \
 	else \
 		echo "WARNING: no Developer identity found; ad-hoc signing."; \
 		echo "         Accessibility permission will NOT persist across rebuilds."; \
