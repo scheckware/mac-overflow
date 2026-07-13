@@ -1,221 +1,254 @@
-# Mac Overflow — Safety, Compatibility & Architecture Analysis
+# Mac Overflow — Security, Efficiency & Architecture Analysis
 
-_Analysis date: 2026-07-11. Reviewed: full source tree (`Sources/`, `Tests/`,
-`Casks/`) — 3 Swift source files, ~230 lines of real code._
+_Last updated: 2026-07-12. Reflects the code as it currently stands (post-fork
+work). Reviewed: full `Sources/` + `Tests/` (~790 lines of source across 6 Swift
+files, 116 lines of tests), `Package.swift`, `Makefile`, `scripts/`,
+`release-workflow.yml`, `Casks/`. A dated change-history is at the end._
 
 ## TL;DR
 
-- **Is it safe?** **Yes — about as safe as a macOS utility gets.** It's a tiny,
-  MIT-licensed, dependency-free native Swift app. **No network access at all**
-  (the README's "privacy-first, no internet access" claim checks out), no shell
-  execution, no dynamic loading, no private APIs, no bundled binaries. It uses only
-  stable **public** Accessibility APIs. There is essentially nothing here that could
-  behave maliciously.
-- **Does it run on macOS 26.5?** **It will run**, but its *effectiveness* on modern
-  macOS is doubtful. It targets macOS 13+ and uses only public APIs that aren't going
-  anywhere. **However**, its method of finding "hidden" items is naive and likely
-  surfaces little or nothing on macOS 26 (see "Big caveat" below) — the very problem
-  that forces heavier apps like Ice/menustow to use private window-server APIs.
-- **Maturity:** This is an **early prototype / MVP**, not a finished product. ~230
-  lines, a placeholder test (`XCTAssertTrue(true)`), a leftover `BartenderLiteTests`
-  filename hinting at its origin, and no app-bundle packaging in the repo.
+- **What it is:** a minimal, dependency-free macOS menu bar **overflow viewer** —
+  a ≡ icon that lists menu bar status items macOS has hidden (overflowed) and lets
+  you activate them. Version **1.0 (build 6)**, MIT-licensed (fork of
+  `omniaura/mac-overflow`), bundle id `com.omniaura.mac-overflow`.
+- **Security:** **very good.** No network, no shell/exec, no dynamic code, no
+  private APIs, no bundled binaries, **zero dependencies**. Requests only the
+  **Accessibility** permission and uses it narrowly (menu-bar-extra metadata only);
+  keeps nothing, sends nothing. The one broad power (Accessibility) is inherent to
+  the app class and used minimally.
+- **Efficiency:** **good.** The Accessibility scan runs **off the main thread**,
+  **concurrently across cores**, with a **0.25 s per-call timeout** — so it can't
+  freeze input and bounds the cost of any unresponsive app. One scan per menu open.
+- **Approach:** **sound and honest.** Visibility is decided by a pure, unit-tested
+  geometry model grounded in real on-device data (menu-bar band + app-menu
+  occlusion + notch). It squarely acknowledges the public-API ceiling: activating
+  some items and distinguishing "app-hidden" from "overflowed" aren't fully solvable
+  without the private-API approach Ice/Bartender take.
+- **Maturity:** now a **working, signed, tested utility** (17 passing tests, clean
+  Swift 6 build) — a large step up from the non-compiling prototype it started as.
 
 ---
 
 ## What it is
 
-Mac Overflow (`com.omniaura.mac-overflow`) is a **menu bar overflow viewer**. It puts
-a single ≡ (hamburger) icon in the menu bar; clicking it opens a dropdown listing menu
-bar items that macOS has pushed off-screen, and clicking an entry forwards a press to
-the real item. That's the entire feature set.
+Mac Overflow is a menu bar **agent** (`.accessory`, no Dock icon). It shows a single
+≡ status item; opening it lists the status items ("menu bar extras") that aren't
+currently visible, each clickable to activate the real item. A separate **All Menu
+Bar Items** window lists every extra (hidden and visible).
 
-- **Language/UI:** Swift 6, SwiftUI + AppKit, accessory (no Dock icon).
-- **Build:** Swift Package Manager executable (`swift-tools-version: 6.0`), **zero
-  dependencies**.
-- **Min OS:** macOS 13.0 (Ventura). Distributed via a Homebrew cask + DMG.
-- **License:** MIT.
-
-## How it works (all of it)
-
-The whole app is three files:
-
-| File | Role |
+| | |
 |---|---|
-| `Sources/MacOverflow/main.swift` (150 ln) | `@main` SwiftUI `App` + `AppDelegate`. Creates the `NSStatusItem`, builds the dropdown `NSMenu` on click, forwards clicks, shows About/Quit, and prompts for Accessibility permission. |
-| `Sources/Services/MenuBarMonitor.swift` (80 ln) | Reads the menu bar via Accessibility and returns items it considers "hidden." |
-| `Sources/Models/MenuBarItem.swift` (69 ln) | Value type for one item; builds itself from an `AXUIElement` (title/position/size/icon) and can `performClick()` via `kAXPressAction`. |
+| **Language / UI** | Swift 6 (strict concurrency), AppKit entry point + SwiftUI for the All Items window |
+| **Build** | Swift Package Manager (`swift-tools-version: 6.0`), **zero dependencies** |
+| **Targets** | `MacOverflowCore` (testable library) + `MacOverflow` (thin executable) + tests |
+| **Min OS** | macOS 13 (Ventura); developed/verified on macOS 26 |
+| **Distribution** | GitHub Releases (DMG/zip) + Homebrew cask; semantic-release CI |
+| **Permissions** | Accessibility only |
+| **License** | MIT (LICENSE present + bundled in the `.app`) |
 
-**Flow:**
-1. On launch, sets `.accessory` policy, creates the ≡ status item, and calls
-   `AXIsProcessTrustedWithOptions` to prompt for Accessibility (quits if denied).
-2. On click, `MenuBarMonitor.getHiddenMenuBarItems()`:
-   - Gets the system-wide element, reads `kAXMenuBarAttribute`, walks its
-     `kAXChildrenAttribute`,
-   - Builds a `MenuBarItem` per child (title, frame, icon),
-   - Sorts by X, and filters to items whose **center X is `<= 0` or `>= screenWidth`**
-     — i.e., treats off-screen center as "hidden."
-3. Renders those in an `NSMenu`; a click calls `AXUIElementPerformAction(…press…)`.
+## Architecture (how it works now)
 
-## Safety analysis
+Clean split between a pure, testable core and a thin UI shell:
 
-**All clean:**
-- **Network:** none. No `URLSession`, no sockets, no telemetry, no update-phone-home.
-  The only URL is a `x-apple.systempreferences:` deep link to open the Accessibility
-  settings pane.
-- **Execution / dynamic code:** none. No `Process`, `NSTask`, `osascript`, `dlopen`,
-  `eval`, or base64 payloads.
-- **Private APIs:** none. Uses only public `ApplicationServices`/AppKit
-  (`AXUIElement*`, `NSStatusItem`, `NSMenu`).
-- **Binaries:** none committed. Source-only.
-- **Dependencies:** none — nothing to vet or get compromised.
-- **Permissions:** only **Accessibility**, requested transparently on first launch.
-  No Screen Recording, Input Monitoring, or Post Events.
+| File (lines) | Role |
+|---|---|
+| `Sources/MacOverflowCore/AX.swift` (62) | Failure-tolerant wrappers over the C Accessibility API (`attribute`, `point`, `size`, `bool`, `children`, `perform`). |
+| `Sources/MacOverflowCore/MenuBarItem.swift` (110) | Value type for one extra (title/owner/pid/icon/frame/`isVisibleInBar` + `AXUIElement`). `from(...)` factory resolves a display name; `performClick()` forwards a press. |
+| `Sources/MacOverflowCore/MenuBarGeometry.swift` (87) | **Pure** visibility model: `MenuBarLayout` snapshot + `isVisible(itemFrame:layout:)`. No AppKit/AX → unit-testable. |
+| `Sources/MacOverflowCore/MenuBarMonitor.swift` (186) | `@MainActor ObservableObject`. Captures a Sendable snapshot on main, runs the AX scan off-main + concurrently, publishes `allItems` / `hiddenItems`. |
+| `Sources/MacOverflow/main.swift` (265) | AppKit entry point + `AppDelegate` (`NSMenuDelegate`): status item, ≡ menu, About/License, self-hidden handling, All Items window. |
+| `Sources/MacOverflow/AllItemsView.swift` (82) | SwiftUI list (Hidden / In Menu Bar), clickable rows, hosted via `NSHostingController`. |
 
-**Minor supply-chain nit:** `Casks/mac-overflow.rb` uses `sha256 :no_check`, so the
-Homebrew cask does **not** verify the downloaded zip's hash. If you install via the
-cask, you're trusting the GitHub release asset without integrity pinning. (Building
-from this source sidesteps that entirely.)
+**Scan flow (`MenuBarMonitor.refresh`)**
+1. On the main actor, snapshot everything the scan needs as **Sendable** data:
+   screen frames, menu-bar thickness, notch geometry (`NSScreen.auxiliaryTop*Area`),
+   frontmost PID, and `(pid, name, icon)` per running app.
+2. Off-main (`scanQueue.async` → `DispatchQueue.concurrentPerform`): for each app,
+   `AXUIElementCreateApplication` → read `kAXExtrasMenuBarAttribute` → children;
+   skip disabled/zero-size placeholders; build a `MenuBarItem`; compute
+   `isVisibleInBar` via `MenuBarGeometry`. Every AX element gets a **0.25 s**
+   messaging timeout.
+3. Results marshalled back to the main actor (`Task { @MainActor }`), stored in
+   `@Published allItems`; `onUpdate` fires for the imperative `NSMenu`.
 
-## macOS 26.5 compatibility
+**UI flow (`AppDelegate`)** — the ≡ menu rebuilds via `NSMenuDelegate`: each open
+triggers a fresh scan and shows **"Scanning…"** until it lands (so no stale data and
+no shrink-under-cursor). Clicking an item calls `performClick()`; clicking the
+**Mac Overflow** row shows our own menu via AppKit (never AX). ~3 s after launch a
+one-shot scan checks whether our own ≡ is overflowed and, if so, opens All Items.
 
-- **Will it launch/run on 26.5?** Yes. Everything it uses is stable public API with a
-  macOS 13 floor; nothing here is deprecated or version-fragile.
-- **Big caveat — will it actually *work* on 26.5?** Questionable:
-  1. `AXUIElementCreateSystemWide()` + `kAXMenuBarAttribute` returns the **focused
-     app's application menu** (Apple/File/Edit…), **not** the right-side status
-     items / menu bar extras (those live under a different element and are owned by
-     other processes — on **macOS 26, Control Center owns them all**). So the monitor
-     may be inspecting the wrong menu bar and could return few or no real status items.
-  2. Truly overflowed/off-screen items often **aren't exposed via Accessibility at
-     all**, so a frame-center test can't "recover" them. This is exactly the wall
-     that pushes Ice/menustow toward private `CGS*` window-server APIs + an XPC helper.
-- **Net:** it's compatible in the "runs without crashing" sense, but its core promise
-  ("never lose your menu bar icons") likely underdelivers on modern macOS **until the
-  detection is reworked**. This needs verification on a real 26.5 machine.
+## Security analysis
 
-## Suggested improvements
+**Findings — clean across the board:**
 
-**Correctness (the big one)**
-1. **Fix item discovery.** Read the status-item side of the menu bar
-   (`kAXExtrasMenuBarAttribute` / per-app menu-bar-extras), and validate on macOS 26's
-   Control-Center-owned model. Confirm whether AX can even see overflowed items; if
-   not, this app's premise needs a different mechanism.
-2. **Define "hidden" meaningfully.** The current `centerX > 0 && < screenWidth` test is
-   a rough heuristic; account for the notch, multiple displays, and items partially
-   clipped.
+| Vector | Result |
+|---|---|
+| Network | **None.** No `URLSession`/sockets/telemetry. Only `NSWorkspace.open` on a `x-apple.systempreferences:` deep link, the bundled `LICENSE.txt`, and a fallback GitHub URL — all user-initiated, benign. |
+| Code execution / dynamic loading | **None.** No `Process`/`NSTask`/`osascript`/`dlopen`/`eval`/base64. |
+| Private APIs | **None.** Public `ApplicationServices` (AX) + `NSScreen.auxiliaryTop*Area` (public since macOS 12) + AppKit. |
+| Dependencies | **Zero** — no third-party supply chain. |
+| Bundled binaries | **None** — source only. |
+| Persistence / data at rest | **None** in normal operation. Scanned metadata is held only in memory; the old `/tmp` debug log is gone. |
+| Entitlements / sandbox / hardened runtime | No entitlements file; not sandboxed (can't be, given AX). No hardened runtime — see distribution note. |
 
-**Product / robustness**
-3. **Real tests.** Replace the placeholder `XCTAssertTrue(true)` (and rename the stray
-   `BartenderLiteTests.swift`) with tests over the visibility/sorting logic.
-4. **Package a proper `.app`.** As a raw SPM executable there's no bundle Info.plist/
-   entitlements/signing in the repo, yet Accessibility trust is keyed to a stable
-   signed bundle identity — document or add the packaging step the cask assumes.
-5. **Refresh live / handle permission-granted-after-launch** instead of quitting when
-   Accessibility is denied.
+**Privilege posture.** Accessibility is a broad grant, but this app exercises it
+narrowly: it reads menu-bar-extra **metadata** (title, description, frame, icon,
+enabled) and posts `AXPress` to activate items. It does not read window contents,
+monitor keystrokes, or request Input Monitoring / Post Events / Screen Recording.
+Nothing scanned leaves the process.
 
-**Hygiene**
-6. **Pin the cask hash** (drop `sha256 :no_check`) once releases are stable.
+**Resilience note.** A previously-found bug — AX-pressing the app's *own* status item
+deadlocks the main thread — is now hard-guarded in `performClick()`
+(`ownerPID != getpid()` → early return before any AX call). Good defensive posture.
+
+**Force-unwrap review.** The `as!` casts are safe: `value as! AXValue` is guarded by a
+`CFGetTypeID` check; `image.copy() as! NSImage` is contractually an `NSImage`.
+`statusItem` is an implicitly-unwrapped optional set in `applicationDidFinishLaunching`
+before any use. No trap risk observed.
+
+**Remaining nits (not vulnerabilities):**
+- `Casks/mac-overflow.rb` uses `sha256 :no_check` — the Homebrew cask doesn't pin the
+  download hash. Fine while pre-release; pin it once artifacts are stable. Building
+  from source avoids it.
+- Signing is **Apple Development** (a development cert), and CI does **not** notarize.
+  Fine for personal use; distributing to others cleanly (no Gatekeeper warning) needs
+  **Developer ID + notarization**.
+
+## Efficiency analysis
+
+**Strengths:**
+- **Off-main + concurrent.** The scan runs on a background queue and fans out across
+  cores with `concurrentPerform`, so per-app AX IPC (and its one-time connection
+  setup) overlaps instead of serializing. This is also what keeps the UI responsive.
+- **Bounded blocking.** `AXUIElementSetMessagingTimeout(…, 0.25)` on every element
+  caps how long any single unresponsive app can stall the scan.
+- **No redundant scans.** `refresh()` early-returns if a scan is already in flight or
+  the app isn't trusted, so overlapping triggers (menu open + refresh-after-click)
+  collapse to one.
+- **Cheap UI.** Menu build reads cached results (no AX on the menu-tracking loop);
+  stale entries are pruned with a cheap `NSRunningApplication(processIdentifier:)`
+  check; icons are resized via a small copy.
+
+**Costs / trade-offs (all acceptable):**
+- **Every menu open scans every running app.** There's no cache of "which apps have
+  extras," so a machine with ~150 processes does ~150 `AXUIElementCreateApplication`
+  + attribute reads per open. Parallelism + the 0.25 s cap keep this sub-second in
+  practice, and freshness is the correct default for a menu, but it is repeated work.
+  A future optimization could remember PIDs that returned extras and re-scan only
+  those plus newly-launched apps.
+- **AX thread-safety** across `concurrentPerform` is relied upon empirically (each
+  iteration targets a distinct app's elements). Not formally documented by Apple, but
+  standard practice and safe here since results are collected under a lock.
+
+## Approach & correctness
+
+The core question — "is a status item visible or overflowed?" — is handled well.
+`MenuBarGeometry.isVisible` decides visibility from three occlusion models, all via
+**public** APIs and derived from real on-device Accessibility captures:
+1. **Menu-bar band** — item top edge near `y ≈ 0`, horizontal center within a screen.
+2. **App-menu occlusion (non-notched)** — items whose center is left of the frontmost
+   app's menu width are painted over.
+3. **Notch (notched displays)** — the notch is the authoritative left boundary;
+   items must clear its right edge by a guard band. Deliberately **ignores** the
+   app-menu width here so results don't depend on which app is frontmost (that
+   inconsistency previously made the ≡ menu and All Items disagree).
+
+Extracting this into a pure, dependency-free type with **17 unit tests** (including
+regression cases from real coordinates) is the right design — the fiddly logic is
+testable without a live window server or granted permissions.
+
+**Honest, documented limitations** (inherent to a public-API app):
+- **Activation is best-effort.** `performClick()` tries press → show-menu → child
+  press. Some items advertise `AXPress` yet ignore it when off-screen; there's no
+  reliable public signal for "clicked but nothing happened." Full reliability needs
+  synthesized mouse events at the item's on-screen location (private-API territory).
+- **"App-hidden" vs "overflowed" are indistinguishable** — an app that parks its own
+  icon off-screen looks identical to a genuinely overflowed one, so both appear as
+  hidden.
+- **Multi-display / notch guard.** The notch rule assumes the primary notched
+  display; secondary menu bars may be misclassified. The `notchGuard = 24` px is a
+  tuned heuristic (macOS leaves a gap so items don't render flush against the notch),
+  not a value read from the system.
+
+## Code quality
+
+- **Concurrency:** clean Swift 6 strict-concurrency model — `@MainActor` UI/monitor,
+  a Sendable snapshot handed to a `nonisolated` scan, results marshalled back via
+  `Task { @MainActor }`. `MenuBarItem` is `@unchecked Sendable` (immutable, holds CF
+  types) with a clear rationale.
+- **Separation:** pure core vs. UI shell; the AX layer is small and uniformly
+  failure-tolerant.
+- **Test coverage gap:** only the pure geometry is unit-tested. The monitor, AX
+  helpers, and menu logic are effectively integration code (need a live system +
+  granted permission), so they're validated by manual run, not tests. Reasonable, but
+  it's the main coverage gap.
+
+## macOS 26 compatibility
+
+Runs and works on macOS 26 (verified on a notched MacBook Pro M4). All APIs are
+public and current; the detection is specifically adapted to macOS 26's model where
+Control Center owns most menu-bar extras (including empty placeholder slots, which are
+filtered out). No deprecated or version-fragile calls. The macOS-13 floor is a floor,
+not a ceiling.
+
+## Suggested improvements (prioritized)
+
+**Distribution (do these before sharing with others)**
+1. **Developer ID signing + notarization** so it opens without Gatekeeper warnings on
+   other Macs (CI currently builds/publishes but doesn't notarize).
+2. **Pin the Homebrew cask hash** (drop `sha256 :no_check`) once release artifacts
+   are stable.
+
+**Robustness / quality**
+3. **Broaden tests** beyond geometry — e.g. factor the placeholder-skip and
+   name-resolution logic so they can be exercised with synthetic AX-like inputs.
+4. **Scan efficiency (optional)** — cache PIDs known to vend extras and re-scan only
+   those + newly-launched apps, to cut the per-open work on busy machines.
+5. **Custom app icon** — currently an SF Symbol only; a real `.icns`/asset would
+   improve Finder/Dock presentation (minor, cosmetic).
+
+**Nice-to-have**
+6. **Persist the ≡ position** with `NSStatusItem.autosaveName` so the user's chosen
+   spot survives relaunches (the closest public-API approximation of "keep it left of
+   the hidden cluster").
 
 ---
 
 ### Verdict
 
-A clean, safe, minimal, easy-to-audit MVP. Its safety and simplicity are its strengths;
-its weakness is that the core "find hidden items" logic is naive and probably ineffective
-on current macOS (especially macOS 26). Great as a starting point or a
-learn-from-it codebase — not yet a dependable daily driver.
+A safe, efficient, honestly-scoped menu bar utility. It does one thing with public
+APIs, minimal privilege, zero dependencies, and no network — and it's now correct and
+tested where it counts. Its ceiling (fully reliable activation, forcing icon
+placement) is set by Apple's public API surface, and the code is candid about that
+rather than reaching for fragile private-API workarounds. For personal/small-group
+use it's solid today; for public distribution, add Developer ID signing +
+notarization.
 
 ---
 
-## Update (2026-07-11): improvements applied
+## Change history (condensed)
 
-The project **did not compile as downloaded**. The following fixes were applied and
-verified (clean Swift 6 build, 0 warnings; 7/7 unit tests passing; universal `.app`
-packages correctly):
+**2026-07-11 — initial review & repair.** As downloaded, the project **did not
+compile** (`kAXImageAttribute` doesn't exist; Swift 6 concurrency errors). Fixed the
+build; split into `MacOverflowCore` + executable; rewrote enumeration to walk every
+app's `kAXExtrasMenuBarAttribute` (was reading the focused app's *application* menu —
+the wrong element); added real geometry tests; made the app non-fatal when
+Accessibility is denied.
 
-**Build blockers fixed**
-- `MenuBarItem` referenced `kAXImageAttribute`, **a constant that doesn't exist** in the
-  SDK → now uses the raw `"AXImage"` attribute string.
-- Removed the Swift-5 language-mode workaround; the code now builds under **Swift 6
-  strict concurrency** with no warnings. UI code is `@MainActor`, and the
-  Accessibility prompt uses the literal `"AXTrustedCheckOptionPrompt"` instead of the
-  non-concurrency-safe imported global.
+**2026-07-12 — on-device tuning (macOS 26, notched MBP).** Using a temporary
+`AXDebug` capture, reverse-engineered how macOS 26 hides extras (Control Center
+ownership, empty placeholders, off-screen parking, app-menu and notch occlusion) and
+built the three-model visibility logic. Fixed a **system-wide input freeze** (moved
+the scan off-main with a per-call timeout), parallelized the scan, added stable code
+signing (Accessibility grant now persists across rebuilds), the **All Menu Bar
+Items** window, Rescan, and stale-entry pruning.
 
-**Core correctness**
-- Rewrote enumeration to walk **every running app's `kAXExtrasMenuBarAttribute`**
-  (the actual right-side status items, incl. Control Center) instead of the focused
-  app's application menu, which was the wrong element entirely.
-- Visibility logic extracted into a pure, unit-tested `MenuBarGeometry` helper.
-- Icons fall back to the owning app's icon; titles fall back to description/app name.
-
-**Structure, UX, packaging**
-- Split into a testable `MacOverflowCore` library + a thin executable target.
-- Menu now rebuilds via `NSMenuDelegate` (idiomatic) instead of the assign/click/nil
-  hack; the app no longer **quits** when Accessibility is denied — it shows a "grant
-  permission" entry and re-checks on each open.
-- Replaced the placeholder test (and stray `BartenderLiteTests.swift`) with real
-  `MenuBarGeometry` tests.
-- Fixed `make app` to copy from the correct universal-build path and made the
-  Info.plist script executable / invoked via `bash`.
-
-**Still needs on-device verification:** whether Accessibility actually surfaces
-*overflowed* items on macOS 26 is a runtime question this analysis can't settle. The
-enumeration now targets the correct API surface, but items merely clipped under the
-notch (vs. pushed fully off-screen) may still require window-server APIs — the
-approach the heavier Ice/menustow app takes.
-
----
-
-## Update (2026-07-12): on-device tuning (MacBook Pro M4, macOS 26)
-
-Verified on a notched MacBook Pro by dumping live Accessibility data (a debug mode
-that writes `/tmp/macoverflow-ax.log` when the `AXDebug` default is set). This
-resolved the "does it actually work" question above and drove several fixes.
-
-**How macOS 26 actually hides menu bar items (reverse-engineered):**
-- **Control Center owns most items** and vends ~10 **empty placeholder slots**
-  (`AXEnabled=0`, size 0×0) — now skipped.
-- **Names** come from `AXDescription` / `AXHelp` / `AXIdentifier` (title is usually
-  empty), falling back to the owning app name.
-- Overflowed items keep **normal-looking on-bar coordinates** — macOS just doesn't
-  draw them. So visibility can't be judged from "is X on screen" alone. Items are
-  hidden by being: parked off-screen (odd X/Y), **painted over by the frontmost
-  app's menus** on the left, or **on the wrong side of the notch**.
-
-**Detection now models all three (public APIs only):**
-- Menu bar band check (X on a screen, top edge near `y≈0`).
-- **App-menu occlusion** — measures the frontmost app's menu width
-  (`kAXMenuBarAttribute`); items whose center is left of it are hidden.
-- **Notch** — reads the notch span via `NSScreen.auxiliaryTopLeftArea/…RightArea`;
-  on a notched display, items that don't clear the notch's right edge (plus a small
-  guard band, since macOS won't render flush against the notch) are hidden. This is
-  the case that catches ClipboardHistory et al. at low resolution.
-
-**Other fixes/features this round:**
-- **Concurrent scan** (`DispatchQueue.concurrentPerform`) — the initial cold scan was
-  slow because it queried every app's AX serially; now fanned out across cores.
-- **Freeze fix (critical):** the scan runs off the main thread with a 0.25s per-call
-  AX timeout, so it can never block the menu's input-grabbing run loop (an earlier
-  version froze the keyboard system-wide).
-- **Stable code signing** — `make app` signs with a Developer identity so the
-  Accessibility grant persists across rebuilds (ad-hoc signing changes identity every
-  build, which made macOS re-prompt endlessly).
-- **"All Menu Bar Items" window** — lists every extra (hidden + visible) with icon,
-  name, and owner; **rows are clickable** to activate any item. This is also the
-  practical answer to boundary imperfection: anything is reachable regardless of
-  bucket.
-- **Stale-entry pruning + Rescan** — items whose owning process has quit are dropped
-  immediately; a Rescan command and refresh-after-click keep the list current.
-
-**Remaining honest limitations:**
-- **Clicking is best-effort.** `performClick` tries press → show-menu → child; items
-  whose apps only respond to a real mouse-down at an on-screen location can't be
-  triggered while off-screen. Full reliability needs synthetic mouse events (the
-  Ice/menustow window-server approach).
-- **"App-hidden" vs "overflowed" are indistinguishable** — an app that parks its own
-  icon off-screen (e.g. Copilot, JetBrains Toolbox with their menu bar icon turned
-  off) looks identical to an overflowed item, so both appear in the hidden list.
-- **Multi-display** notch/menu-bar handling assumes the primary notched display;
-  secondary-display menu bars may be misclassified.
-
-
+**2026-07-12 — later same day.** Removed unreliable "(Not Clickable)" detection
+(advertised AX actions don't predict clickability) and the click beep; hard-guarded
+the **self-AX-press deadlock**; menu now shows "Scanning…" then this open's fresh
+results (no stale/shrink); dropped the empty "Mac Overflow Settings" window (switched
+to a pure AppKit entry point); set version **1.0 (build N)** via
+`scripts/generate-info-plist.sh` (marketing vs build number) surfaced in the About
+panel and Finder; added a **bump-build** skill; added the **MIT `LICENSE`**
+(preserving upstream copyright), bundled it in the `.app`, and surfaced upstream
+attribution + a "View License…" button in the About panel.
