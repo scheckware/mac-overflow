@@ -1,4 +1,4 @@
-.PHONY: build run run-app clean release app dmg install uninstall test
+.PHONY: build run run-app clean release app dmg notarize dist install uninstall test
 
 # Code-signing identity used by `make app`. Prefers a "Developer ID Application"
 # identity (required for notarization / sharing with others), then falls back to
@@ -49,20 +49,22 @@ app: release
 	@echo "App bundle created at build/MacOverflow.app"
 
 dmg: app
-	@echo "Creating DMG..."
-	@command -v create-dmg >/dev/null 2>&1 || brew install create-dmg
-	@create-dmg \
-		--volname "Mac Overflow" \
-		--window-pos 200 120 \
-		--window-size 600 400 \
-		--icon-size 100 \
-		--icon "MacOverflow.app" 175 120 \
-		--hide-extension "MacOverflow.app" \
-		--app-drop-link 425 120 \
-		"build/MacOverflow.dmg" \
-		"build/MacOverflow.app" 2>/dev/null || \
-	hdiutil create -volname "Mac Overflow" -srcfolder build/MacOverflow.app -ov -format UDZO "build/MacOverflow.dmg"
-	@echo "DMG created at build/MacOverflow.dmg"
+	@bash scripts/make-dmg.sh build/MacOverflow.app build/MacOverflow.dmg
+
+# Notarize + staple the already-built .app (run `make app` first). Requires a
+# Developer ID signature (make app provides it) and notary credentials — either a
+# keychain profile (NOTARY_PROFILE, default "MacOverflow") or App Store Connect
+# API key env vars (NOTARY_KEY_ID / NOTARY_ISSUER_ID / NOTARY_KEY_PATH).
+notarize:
+	@bash scripts/notarize.sh build/MacOverflow.app
+
+# Full distributable pipeline: build + sign, notarize + staple, then package a
+# stapled DMG + ZIP that open with no Gatekeeper warning on any Mac.
+dist: app notarize
+	@bash scripts/make-dmg.sh build/MacOverflow.app build/MacOverflow.dmg
+	@rm -f build/MacOverflow.zip
+	@/usr/bin/ditto -c -k --keepParent build/MacOverflow.app build/MacOverflow.zip
+	@echo "Distributables ready: build/MacOverflow.dmg, build/MacOverflow.zip (notarized + stapled)"
 
 install: app
 	@echo "Installing Mac Overflow..."

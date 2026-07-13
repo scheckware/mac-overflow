@@ -78,9 +78,26 @@ jobs:
             .build/x86_64-apple-macosx/release/MacOverflow \
             -output .build/universal/MacOverflow
 
-      - name: Create app bundle
+      - name: Import Developer ID signing certificate
         env:
-          VERSION: ${{ needs.check-release.outputs.version }}
+          CERT_P12_BASE64: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          KEYCHAIN_PW=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f cert.p12
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN"
+
+      - name: Create + sign app bundle
+        env:
+          MARKETING_VERSION: ${{ needs.check-release.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           mkdir -p build/MacOverflow.app/Contents/MacOS
           mkdir -p build/MacOverflow.app/Contents/Resources
@@ -88,6 +105,21 @@ jobs:
           chmod +x build/MacOverflow.app/Contents/MacOS/MacOverflow
           ./scripts/generate-info-plist.sh > build/MacOverflow.app/Contents/Info.plist
           cp LICENSE build/MacOverflow.app/Contents/Resources/LICENSE.txt
+          IDENTITY=$(security find-identity -v -p codesigning | grep -m1 "Developer ID Application" | sed -E 's/^[^"]*"([^"]+)".*/\1/')
+          echo "Signing with: $IDENTITY"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" build/MacOverflow.app
+          codesign --verify --strict --verbose=2 build/MacOverflow.app
+
+      - name: Notarize + staple
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY_P8_BASE64: ${{ secrets.NOTARY_KEY_P8 }}
+        run: |
+          echo "$NOTARY_KEY_P8_BASE64" | base64 --decode > notary_key.p8
+          export NOTARY_KEY_PATH="$PWD/notary_key.p8"
+          bash scripts/notarize.sh build/MacOverflow.app
+          rm -f notary_key.p8
 
       - name: Create ZIP
         id: zip
@@ -95,7 +127,8 @@ jobs:
           VERSION: ${{ needs.check-release.outputs.version }}
         run: |
           cd build
-          zip -r "MacOverflow-${VERSION}.zip" MacOverflow.app
+          # ditto preserves the stapled ticket + signature; keepParent keeps the .app wrapper.
+          ditto -c -k --keepParent MacOverflow.app "MacOverflow-${VERSION}.zip"
           echo "sha256=$(shasum -a 256 "MacOverflow-${VERSION}.zip" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Create DMG
@@ -103,21 +136,7 @@ jobs:
           VERSION: ${{ needs.check-release.outputs.version }}
         run: |
           brew install create-dmg || true
-          create-dmg \
-            --volname "Mac Overflow" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "MacOverflow.app" 175 120 \
-            --hide-extension "MacOverflow.app" \
-            --app-drop-link 425 120 \
-            "build/MacOverflow-${VERSION}.dmg" \
-            "build/MacOverflow.app" || \
-          hdiutil create \
-            -volname "Mac Overflow" \
-            -srcfolder build/MacOverflow.app \
-            -ov -format UDZO \
-            "build/MacOverflow-${VERSION}.dmg"
+          bash scripts/make-dmg.sh build/MacOverflow.app "build/MacOverflow-${VERSION}.dmg"
 
       - name: Update Homebrew cask
         env:
